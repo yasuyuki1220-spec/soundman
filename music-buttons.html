@@ -48,7 +48,7 @@
 <body>
 <div class="top">
   <h1>🎺 ファンファーレプレイヤー</h1>
-  <div class="hint">キー: 平常=1〜5 / ファンファーレ=Q W E R T / Esc=全停止　※どれか1つだけ鳴ります</div>
+  <div class="hint">キー: 平常=1〜6 / ファンファーレ=Q W E R T Y / Esc=全停止　※どれか1つだけ鳴ります</div>
   <button class="btn" id="stopAll">■ 全部ストップ</button>
 </div>
 <div class="wrap" id="wrap"></div>
@@ -487,8 +487,8 @@
   // ---------- 画面の組み立て（平常5 + ファンファーレ5） ----------
   const wrap = document.getElementById("wrap");
   const GROUPS = [
-    { cls: "normal",  title: "🎵 平常用",         loop: true,  keys: ["1","2","3","4","5"] },
-    { cls: "fanfare", title: "🎺 ファンファーレ用", loop: false, keys: ["Q","W","E","R","T"] }
+    { cls: "normal",  title: "🎵 平常用",         loop: true,  keys: ["1","2","3","4","5","6"] },
+    { cls: "fanfare", title: "🎺 ファンファーレ用", loop: false, keys: ["Q","W","E","R","T","Y"] }
   ];
   GROUPS.forEach(gp => {
     const cat = document.createElement("div");
