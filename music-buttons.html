@@ -290,8 +290,9 @@
         if (this.loop){ this.yt.seekTo(this.start, true); this.yt.playVideo(); } else this.stop();
       } else if (s === 2 && this.playing && !recent){
         this.stop();
-      } else if (s === 1 && !this.playing && !recent){
-        this.play();
+      } else if (s === 1 && !this.playing){
+        // 自分で再生した覚えがないのに動き出したら、止める（勝手に鳴らない）
+        try { this.yt.pauseVideo(); } catch(e){}
       }
     }
 
@@ -413,10 +414,12 @@
     stop(){
       this.cmdAt = Date.now();
       this.killSource();
+      const was = this.playing;
       this.playing = false;
       if (this.mode === "yt" && this.yt && this.yt.pauseVideo){
         clearInterval(this.mon);
-        try { this.yt.pauseVideo(); this.yt.seekTo(this.start, true); } catch(e){}
+        // 再生していた枠だけ止める（未再生の枠にseekToすると勝手に再生が始まるため触らない）
+        if (was) { try { this.yt.pauseVideo(); } catch(e){} }
       }
       this.updateBtn(); this.draw();
     }
