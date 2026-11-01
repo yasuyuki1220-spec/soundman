@@ -49,18 +49,32 @@
   input[type=range]{accent-color:var(--c)}
   .msg{color:#ff8a94;font-size:12px;min-height:16px;margin-top:6px}
   .trk.drag{outline:2px dashed var(--c)}
+  .btn.danger{border-color:#7a3b46;color:#ff8a94}
+  .btn.danger:hover{background:#4a2630}
+  #keypanel{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+  #keypanel[hidden]{display:none}
+  #keypanel .box{background:var(--card);border:2px solid var(--line);border-radius:16px;padding:18px 20px;width:min(640px,100%);max-height:88vh;overflow:auto}
+  #keypanel h3{margin:0 0 6px;font-size:17px}
+  #keypanel .krows{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin:12px 0}
+  #keypanel .kr{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;color:var(--text)}
+  #keypanel .kb{min-width:110px;background:#12141c;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;cursor:pointer;font-size:13px}
+  #keypanel .kb.cap{border-color:#ffc233;color:#ffc233}
+  #keypanel .kb.none{color:var(--sub)}
+  @media (max-width:560px){#keypanel .krows{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="top">
   <h1>🎺 ファンファーレプレイヤー</h1>
-  <div class="hint">キー: 平常=1〜6 / ファンファーレ=Q W E R T Y / F=全画面 / Esc=全停止　※どれか1つだけ鳴ります</div>
-  <div style="display:flex;gap:8px">
+  <div class="hint">各ボタンの [ ] 内のキーで操作できます（「⌨ キー設定」で自由に変更可・Escは常に全停止）　※どれか1つだけ鳴ります</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn" id="keyBtn">⌨ キー設定</button>
     <button class="btn" id="fs">⛶ 全画面</button>
     <button class="btn" id="stopAll">■ 全部ストップ</button>
   </div>
 </div>
 <div class="wrap" id="wrap"></div>
+<div id="keypanel" hidden><div class="box"></div></div>
 
 <script>
 (() => {
@@ -109,6 +123,12 @@
   }).catch(() => null);
   const dbPut = async (k, v) => { const db = await dbp; if (!db) return; db.transaction("slots","readwrite").objectStore("slots").put(v,k); };
   const dbGet = async k => { const db = await dbp; if (!db) return null; return new Promise(r => { const q = db.transaction("slots").objectStore("slots").get(k); q.onsuccess = () => r(q.result||null); q.onerror = () => r(null); }); };
+
+  const dbDel = async k => { const db = await dbp; if (!db) return; return new Promise(r => { const t = db.transaction("slots","readwrite"); t.objectStore("slots").delete(k); t.oncomplete = () => r(); t.onerror = () => r(); }); };
+
+  // ---------- キー割り当て ----------
+  const keymap = { "pl-normal": "0", "pl-fanfare": "P", stopAll: "SPACE", fs: "F" };   // 曲枠のキーは下で追加
+  const keyLabel = k => !k ? "" : k === "SPACE" ? "Space" : k === "ESCAPE" ? "Esc" : k;
 
   const fmt = s => { s = Math.max(0,s); const m = Math.floor(s/60); return m + ":" + (s - m*60).toFixed(1).padStart(4,"0"); };
   const slots = [];
@@ -170,7 +190,8 @@
     updatePlBtn(){
       const b = this.$(".pl");
       b.classList.toggle("on", this.plActive);
-      b.textContent = this.plActive ? "■ 連続再生を止める" : "🔁 " + this.A + "〜" + this.N + "曲目を連続再生";
+      const kl = keyLabel(keymap["pl-" + this.cls]), kp = kl ? "[" + kl + "] " : "";
+      b.textContent = kp + (this.plActive ? "■ 連続再生を止める" : "🔁 " + this.A + "〜" + this.N + "曲目を連続再生");
     }
     plMsg(t){ this.$(".plmsg").textContent = t || ""; }
     plToggle(){
@@ -234,6 +255,7 @@
           <div class="row">
             <button class="btn load">📂 音楽ファイルを選ぶ</button>
             <button class="btn export" style="display:none">💾 トリミングしてmp3保存</button>
+            <button class="btn danger del" style="display:none">🗑 この曲を削除</button>
             <label><input type="checkbox" class="loop"> くり返し再生</label>
             <label>音量 <input type="range" class="vol" min="0" max="1" step="0.01"></label>
           </div>
@@ -269,6 +291,7 @@
       this.$(".load").onclick = () => this.file.click();
       this.file.onchange = () => { if (this.file.files[0]) this.loadFile(this.file.files[0]); this.file.value = ""; };
       this.$(".export").onclick = () => this.exportMp3();
+      this.$(".del").onclick = () => this.remove();
       this.$(".ytload").onclick = () => this.loadYouTube(this.$(".yturl").value);
       this.$(".yturl").onkeydown = e => { if (e.key === "Enter") this.loadYouTube(e.target.value); };
       this.$(".ytshow").onclick = () => {
@@ -280,7 +303,8 @@
         this.volume = +this.volEl.value;
         if (this.gain && !this.fadingOut){ this.gain.gain.cancelScheduledValues(0); this.gain.gain.value = this.volume; }
         if (this.mode === "yt" && this.yt && this.yt.setVolume && !this.fadeIv && !this.fadingOut) this.yt.setVolume(this.volume * 100);
-        this.save();
+        // つまみを動かしている間は保存せず、止まってから1回だけ保存（音源ごと書き込むので重い）
+        clearTimeout(this._saveT); this._saveT = setTimeout(() => this.save(), 500);
       };
       this.ns.onchange = () => this.mode && this.setTrim(+this.ns.value, this.end, true);
       this.ne.onchange = () => this.mode && this.setTrim(this.start, +this.ne.value, true);
@@ -401,6 +425,23 @@
       }
     }
 
+    // ----- 曲の削除（この枠を空にする） -----
+    async remove(){
+      if (!this.mode) return;
+      if (!confirm("「" + this.name + "」をこの枠から削除しますか？\n（元の音楽ファイルは消えません）")) return;
+      this.stop();
+      this.destroyYT();
+      clearTimeout(this._saveT);
+      this.mode = null; this.buffer = null; this.peaks = null; this._data = null; this.name = "";
+      this.ytId = null; this.ytDur = 0; this.resumePos = null; this.start = 0; this.end = 0;
+      await dbDel(this.id);
+      if (this.n === 1) await dbDel(this.cls);      // 旧バージョンの保存データから復活しないように
+      this.$(".fname").textContent = ""; this.ns.value = ""; this.ne.value = "";
+      this.$(".len").textContent = ""; this.$(".yturl").value = ""; this.msg("");
+      this.$(".ytbox").classList.add("collapsed"); this.$(".ytshow").textContent = "映像を出す";
+      this.updateBtn(); this.draw(); this.openBody(false);
+    }
+
     // ----- mp3保存（音楽ファイルのみ） -----
     async exportMp3(){
       if (this.mode !== "file") return;
@@ -480,6 +521,7 @@
     play(useResume = false){
       if (!this.mode) return;
       slots.forEach(s => { if (s !== this) s.stop(); });
+      this.cancelFadeOut();   // フェードアウト中に再生し直しても、後から止まらないように
       this.cmdAt = Date.now();
       const cat = this.cat;
       const resume = useResume && cat.resumeOn && this.resumeValid();
@@ -590,9 +632,12 @@
       this.el.classList.toggle("playing", this.playing);
       this.big.classList.toggle("stop", this.playing);
       this.big.classList.toggle("empty", !this.mode);
-      const k = "[" + this.key + "] ";
+      const kl = keyLabel(keymap[this.id]), k = kl ? "[" + kl + "] " : "";
       this.big.textContent = !this.mode ? k + "＋ 音源を入れる" : this.fadingOut ? k + "…フェードアウト中　" + this.name : this.playing ? k + "■ ストップ　" + this.name : k + "▶ " + this.name;
       this.big.title = this.big.textContent;
+      this.$(".export").style.display = this.mode === "file" ? "" : "none";
+      this.$(".del").style.display = this.mode ? "" : "none";
+      this.$(".ytshow").style.display = this.mode === "yt" ? "" : "none";
     }
     pos(){
       if (!this.playing) return null;
@@ -658,6 +703,7 @@
     { cls: "fanfare", title: "🎺 ファンファーレ用", loop: false, resume: false, keys: ["Q","W","E","R","T","Y"] }
   ];
   const cats = GROUPS.map(gp => {
+    gp.keys.forEach((k, i) => { keymap[gp.cls + "-" + (i + 1)] = k.toUpperCase(); });
     const cat = new Cat(gp);
     wrap.appendChild(cat.el);
     gp.keys.forEach((k, i) => { const s = new Slot(cat, i + 1, k, gp.loop, cat.listEl); cat.slots.push(s); slots.push(s); });
@@ -674,20 +720,93 @@
     else document.documentElement.requestFullscreen().catch(() => {});
   };
   fsBtn.onclick = toggleFS;
+  const fsLabel = () => {
+    const kl = keyLabel(keymap.fs);
+    return (document.fullscreenElement ? "⛶ 全画面を終了" : "⛶ 全画面") + (kl ? " [" + kl + "]" : "");
+  };
   document.addEventListener("fullscreenchange", () => {
-    fsBtn.textContent = document.fullscreenElement ? "⛶ 全画面を終了" : "⛶ 全画面";
+    fsBtn.textContent = fsLabel();
     setTimeout(() => slots.forEach(s => s.draw()), 100);
   });
+
+  // ---------- キー設定画面 ----------
+  const DEFAULT_KEYS = { ...keymap };
+  const panel = document.getElementById("keypanel"), box = panel.querySelector(".box");
+  let capturing = null;
+  const keyRows = () => [
+    ...slots.map(s => [s.id, (s.cls === "normal" ? "平常 " : "ファンファーレ ") + s.n + "曲目"]),
+    ["pl-normal", "平常 連続再生"], ["pl-fanfare", "ファンファーレ 連続再生"],
+    ["stopAll", "全部ストップ"], ["fs", "全画面"]
+  ];
+  const saveKeys = () => dbPut("keys", { ...keymap });
+  const refreshKeyLabels = () => {
+    const kl = keyLabel(keymap.stopAll);
+    document.getElementById("stopAll").textContent = "■ 全部ストップ" + (kl ? " [" + kl + "]" : "");
+    fsBtn.textContent = fsLabel();
+    slots.forEach(s => s.updateBtn());
+    cats.forEach(c => c.updatePlBtn());
+  };
+  const renderKeyPanel = () => {
+    box.innerHTML = `<h3>⌨ キー設定</h3>
+      <div class="hint">変えたい項目のボタンを押してから、割り当てたいキーを押します。Backspace=未設定、Esc=キャンセル。（Escは常に全停止に使うので割り当てできません）</div>
+      <div class="krows"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn rst">初期設定に戻す</button><button class="btn cls">閉じる</button></div>`;
+    const rows = box.querySelector(".krows");
+    keyRows().forEach(([id, label]) => {
+      const r = document.createElement("div"); r.className = "kr";
+      const sp = document.createElement("span"); sp.textContent = label;
+      const b = document.createElement("button");
+      b.className = "kb" + (capturing === id ? " cap" : !keymap[id] ? " none" : "");
+      b.textContent = capturing === id ? "キーを押してください…" : (keyLabel(keymap[id]) || "未設定");
+      b.onclick = () => { capturing = id; renderKeyPanel(); };
+      r.append(sp, b); rows.appendChild(r);
+    });
+    box.querySelector(".rst").onclick = () => { capturing = null; Object.keys(keymap).forEach(k => keymap[k] = DEFAULT_KEYS[k] || ""); saveKeys(); refreshKeyLabels(); renderKeyPanel(); };
+    box.querySelector(".cls").onclick = closeKeyPanel;
+  };
+  const openKeyPanel = () => { capturing = null; renderKeyPanel(); panel.hidden = false; };
+  const closeKeyPanel = () => { capturing = null; panel.hidden = true; };
+  document.getElementById("keyBtn").onclick = openKeyPanel;
+  panel.addEventListener("click", e => { if (e.target === panel) closeKeyPanel(); });
+  dbGet("keys").then(r => {            // 保存済みのキー設定を反映
+    if (r) { Object.keys(keymap).forEach(k => { if (k in r) keymap[k] = r[k]; }); }
+    refreshKeyLabels();
+  });
+  refreshKeyLabels();
+
+  // ---------- キー操作 ----------
+  const normKey = e => e.key === " " ? "SPACE" : e.key.toUpperCase();
   addEventListener("keydown", e => {
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!e.key) return;
+    if (capturing){                                  // キー設定中
+      e.preventDefault();
+      if (e.repeat || /^(SHIFT|CONTROL|ALT|META|PROCESS|DEAD|CAPSLOCK)$/.test(e.key.toUpperCase())) return;
+      const id = capturing, k = normKey(e); capturing = null;
+      if (k === "ESCAPE"){ renderKeyPanel(); return; }
+      if (k === "BACKSPACE" || k === "DELETE") keymap[id] = "";
+      else { Object.keys(keymap).forEach(o => { if (keymap[o] === k) keymap[o] = ""; }); keymap[id] = k; }
+      saveKeys(); refreshKeyLabels(); renderKeyPanel(); return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;   // 押しっぱなしで連続切り替えしない
     if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) && e.target.type !== "checkbox" && e.target.type !== "range") return;
-    if (e.key === "Escape") return stopAll();
-    if (e.key === "f" || e.key === "F") return toggleFS();
-    const k = e.key.toUpperCase();
-    const s = slots.find(s => s.key === k);
-    if (s && s.mode) s.toggle();
+    if (e.isComposing || e.key === "Process") return;
+    const k = normKey(e);
+    if (k === "ESCAPE"){ if (!panel.hidden) closeKeyPanel(); else stopAll(); return; }
+    if (!panel.hidden) return;
+    const id = Object.keys(keymap).find(o => keymap[o] === k);
+    if (!id) return;
+    e.preventDefault();
+    if (id === "stopAll") stopAll();
+    else if (id === "fs") toggleFS();
+    else if (id.startsWith("pl-")) cats.find(c => c.cls === id.slice(3)).plToggle();
+    else { const s = slots.find(s => s.id === id); if (s && s.mode) s.toggle(); }
   });
   addEventListener("resize", () => slots.forEach(s => s.draw()));
+  // 枠の外にファイルを落としても、ページが切り替わって再生が止まらないようにする
+  addEventListener("dragover", e => e.preventDefault());
+  addEventListener("drop", e => e.preventDefault());
+  // ボタンを押したあとスペース/Enterで二重に反応しないよう、フォーカスを外す
+  document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("button"); if (b) b.blur(); });
 })();
 </script>
 </body>
