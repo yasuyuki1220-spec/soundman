@@ -54,8 +54,11 @@
 <body>
 <div class="top">
   <h1>🎺 ファンファーレプレイヤー</h1>
-  <div class="hint">キー: 平常=1〜6 / ファンファーレ=Q W E R T Y / Esc=全停止　※どれか1つだけ鳴ります</div>
-  <button class="btn" id="stopAll">■ 全部ストップ</button>
+  <div class="hint">キー: 平常=1〜6 / ファンファーレ=Q W E R T Y / F=全画面 / Esc=全停止　※どれか1つだけ鳴ります</div>
+  <div style="display:flex;gap:8px">
+    <button class="btn" id="fs">⛶ 全画面</button>
+    <button class="btn" id="stopAll">■ 全部ストップ</button>
+  </div>
 </div>
 <div class="wrap" id="wrap"></div>
 
@@ -118,6 +121,7 @@
       this.N = gp.keys.length;          // 連続再生の終了曲
       this.resumeOn = gp.resume;        // 停止位置から再開
       this.fade = 3;                    // 再開時のフェードイン秒
+      this.fadeOut = 2;                 // 停止時のフェードアウト秒
       this.plActive = false;            // 連続再生中
       this._advancing = false;
       this.resumeIdx = null;            // 最後に止めた曲の番号
@@ -130,13 +134,16 @@
           <label><select class="pla">${gp.keys.map((_, i) => `<option value="${i+1}">${i+1}</option>`).join("")}</select>〜<select class="pln">${gp.keys.map((_, i) => `<option value="${i+1}">${i+1}</option>`).join("")}</select>曲目</label>
           <label><input type="checkbox" class="rs"> 停止位置から再開</label>
           <label>再開時フェードイン <input type="number" class="fd" min="0" max="10" step="0.5"> 秒</label>
+          <label>停止時フェードアウト <input type="number" class="fo" min="0" max="10" step="0.5"> 秒</label>
           <span class="plmsg"></span>
         </div>
         <div class="list"></div>`;
       this.$ = s => el.querySelector(s);
       this.listEl = this.$(".list");
       this.sel = this.$(".pln"); this.selA = this.$(".pla"); this.rs = this.$(".rs"); this.fd = this.$(".fd");
-      this.sel.value = this.N; this.selA.value = this.A; this.rs.checked = this.resumeOn; this.fd.value = this.fade;
+      this.fo = this.$(".fo");
+      this.sel.value = this.N; this.selA.value = this.A; this.rs.checked = this.resumeOn; this.fd.value = this.fade; this.fo.value = this.fadeOut;
+      this.fo.onchange = () => { this.fadeOut = Math.max(0, Math.min(10, +this.fo.value || 0)); this.fo.value = this.fadeOut; this.saveSettings(); };
       this.$(".pl").onclick = () => this.plToggle();
       this.selA.onchange = () => {
         this.A = +this.selA.value;
@@ -152,12 +159,12 @@
       this.fd.onchange = () => { this.fade = Math.max(0, Math.min(10, +this.fd.value || 0)); this.fd.value = this.fade; this.saveSettings(); };
       this.updatePlBtn();
     }
-    saveSettings(){ dbPut("cat-" + this.cls, { A: this.A, N: this.N, resumeOn: this.resumeOn, fade: this.fade }); }
+    saveSettings(){ dbPut("cat-" + this.cls, { A: this.A, N: this.N, resumeOn: this.resumeOn, fade: this.fade, fadeOut: this.fadeOut }); }
     async loadSettings(){
       const r = await dbGet("cat-" + this.cls); if (!r) return;
       this.N = Math.min(r.N || this.N, this.slots.length); this.A = Math.min(Math.max(1, r.A || 1), this.N);
-      this.resumeOn = !!r.resumeOn; this.fade = r.fade ?? this.fade;
-      this.sel.value = this.N; this.selA.value = this.A; this.rs.checked = this.resumeOn; this.fd.value = this.fade;
+      this.resumeOn = !!r.resumeOn; this.fade = r.fade ?? this.fade; this.fadeOut = r.fadeOut ?? this.fadeOut;
+      this.sel.value = this.N; this.selA.value = this.A; this.rs.checked = this.resumeOn; this.fd.value = this.fade; this.fo.value = this.fadeOut;
       this.updatePlBtn(); this.slots.forEach(s => s.draw());
     }
     updatePlBtn(){
@@ -170,7 +177,7 @@
       this.plMsg("");
       if (this.plActive){
         const cur = this.slots.find(s => s.playing);
-        if (cur) cur.stop(); else { this.plActive = false; this.updatePlBtn(); }
+        if (cur) cur.stop(false, true); else { this.plActive = false; this.updatePlBtn(); }
         return;
       }
       const pool = this.slots.slice(this.A - 1, this.N);
@@ -208,6 +215,7 @@
       this.start = 0; this.end = 0; this.loop = defaultLoop; this.volume = 0.8;
       this.src = null; this.gain = null; this.playing = false; this.t0 = 0; this.off = 0;
       this.curLoop = false; this.resumePos = null; this.guardUntil = 0;
+      this.fadingOut = false; this.fadeT = null; this.fadeOutIv = null; this.fadeP = null;
       this.build();
       container.appendChild(this.el);
     }
@@ -270,8 +278,8 @@
       this.loopEl.onchange = () => { this.loop = this.loopEl.checked; this.save(); if (this.playing) this.play(false); };
       this.volEl.oninput = () => {
         this.volume = +this.volEl.value;
-        if (this.gain){ this.gain.gain.cancelScheduledValues(0); this.gain.gain.value = this.volume; }
-        if (this.mode === "yt" && this.yt && this.yt.setVolume && !this.fadeIv) this.yt.setVolume(this.volume * 100);
+        if (this.gain && !this.fadingOut){ this.gain.gain.cancelScheduledValues(0); this.gain.gain.value = this.volume; }
+        if (this.mode === "yt" && this.yt && this.yt.setVolume && !this.fadeIv && !this.fadingOut) this.yt.setVolume(this.volume * 100);
         this.save();
       };
       this.ns.onchange = () => this.mode && this.setTrim(+this.ns.value, this.end, true);
@@ -467,7 +475,7 @@
     }
 
     // ----- 再生/停止 -----
-    toggle(){ this.playing ? this.stop() : this.play(true); }
+    toggle(){ this.playing ? this.stop(false, true) : this.play(true); }
     // useResume=true のとき、設定が有効なら停止位置から再開（フェードイン付き）
     play(useResume = false){
       if (!this.mode) return;
@@ -492,7 +500,7 @@
       else src.start(0, from, Math.max(0.05, this.end - from));
       src.onended = () => {
         if (this.src === src){
-          this.src = null; this.playing = false; this.resumePos = null;
+          this.src = null; this.playing = false; this.resumePos = null; this.cancelFadeOut();
           this.updateBtn(); this.draw(); this.cat.afterEnd(this);
         }
       };
@@ -532,10 +540,35 @@
       if (this.src){ const s = this.src; this.src = null; s.onended = null; try { s.stop(); } catch(e){} try { s.disconnect(); } catch(e){} }
     }
     finished(){ this.stop(true); this.cat.afterEnd(this); }   // 最後まで鳴り終わった
-    stop(natural = false){
+    cancelFadeOut(){ clearTimeout(this.fadeT); clearInterval(this.fadeOutIv); this.fadeT = null; this.fadeOutIv = null; this.fadingOut = false; }
+    // フェードアウトしながら止める（秒数が0なら即停止）
+    fadeOutStop(sec){
+      this.fadingOut = true; this.fadeP = this.pos();
+      const cat = this.cat; cat.resumeIdx = this.n;
+      if (!cat._advancing) cat.plActive = false;
+      cat.updatePlBtn();
+      if (this.mode === "file" && this.gain){
+        const g = this.gain.gain, t = ctx.currentTime, v = g.value;
+        g.cancelScheduledValues(t); g.setValueAtTime(v, t); g.linearRampToValueAtTime(0, t + sec);
+      } else if (this.mode === "yt" && this.yt){
+        clearInterval(this.fadeIv); this.fadeIv = null;
+        let v0 = this.volume * 100; try { v0 = this.yt.getVolume(); } catch(e){}
+        const t0 = Date.now();
+        this.fadeOutIv = setInterval(() => {
+          const r = Math.min(1, (Date.now() - t0) / (sec * 1000));
+          try { this.yt.setVolume(v0 * (1 - r)); } catch(e){}
+        }, 100);
+      }
+      this.fadeT = setTimeout(() => this.stop(false, false), sec * 1000 + 80);
+      this.updateBtn();
+    }
+    stop(natural = false, fadeOut = false){
+      const sec = (fadeOut && !natural && this.playing && !this.fadingOut) ? this.cat.fadeOut : 0;
+      if (sec > 0) return this.fadeOutStop(sec);
       this.cmdAt = Date.now();
       const was = this.playing;
-      const p = (was && !natural) ? this.pos() : null;       // 止めた位置を覚える
+      const p = this.fadingOut ? this.fadeP : ((was && !natural) ? this.pos() : null);   // 止めた位置を覚える
+      this.cancelFadeOut();
       this.killSource();
       this.playing = false;
       clearInterval(this.fadeIv); this.fadeIv = null;
@@ -558,7 +591,7 @@
       this.big.classList.toggle("stop", this.playing);
       this.big.classList.toggle("empty", !this.mode);
       const k = "[" + this.key + "] ";
-      this.big.textContent = !this.mode ? k + "＋ 音源を入れる" : this.playing ? k + "■ ストップ　" + this.name : k + "▶ " + this.name;
+      this.big.textContent = !this.mode ? k + "＋ 音源を入れる" : this.fadingOut ? k + "…フェードアウト中　" + this.name : this.playing ? k + "■ ストップ　" + this.name : k + "▶ " + this.name;
       this.big.title = this.big.textContent;
     }
     pos(){
@@ -633,12 +666,23 @@
   cats.forEach(c => c.loadSettings());
   slots.forEach(s => s.restore());
 
-  const stopAll = () => slots.forEach(s => s.stop());
+  const stopAll = () => slots.forEach(s => s.stop(false, true));
   document.getElementById("stopAll").onclick = stopAll;
+  const fsBtn = document.getElementById("fs");
+  const toggleFS = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  };
+  fsBtn.onclick = toggleFS;
+  document.addEventListener("fullscreenchange", () => {
+    fsBtn.textContent = document.fullscreenElement ? "⛶ 全画面を終了" : "⛶ 全画面";
+    setTimeout(() => slots.forEach(s => s.draw()), 100);
+  });
   addEventListener("keydown", e => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) && e.target.type !== "checkbox" && e.target.type !== "range") return;
     if (e.key === "Escape") return stopAll();
+    if (e.key === "f" || e.key === "F") return toggleFS();
     const k = e.key.toUpperCase();
     const s = slots.find(s => s.key === k);
     if (s && s.mode) s.toggle();
