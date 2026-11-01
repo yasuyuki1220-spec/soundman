@@ -15,7 +15,13 @@
   .cat{background:var(--card);border:2px solid var(--line);border-radius:16px;padding:16px 18px}
   .cat.normal{--c:#3fb6ff}
   .cat.fanfare{--c:#ffc233}
-  .cat h2{margin:0 0 8px;font-size:17px;color:var(--c)}
+  .cat h2{margin:0 0 10px;font-size:17px;color:var(--c)}
+  .plbar{display:flex;gap:10px 14px;align-items:center;flex-wrap:wrap;padding:10px 0 12px}
+  .plbar .pl{background:#2c3047;border-color:var(--c);color:var(--c);font-weight:700}
+  .plbar .pl.on{background:var(--c);color:#111}
+  .plbar select,.plbar input[type=number]{background:#12141c;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+  .plbar input[type=number]{width:60px}
+  .plmsg{color:#ff8a94;font-size:12px}
   .trk{border-top:1px solid var(--line);padding:10px 0;border-radius:8px}
   .trk.playing{background:rgba(255,255,255,.05)}
   .head{display:flex;gap:8px}
@@ -104,14 +110,104 @@
   const fmt = s => { s = Math.max(0,s); const m = Math.floor(s/60); return m + ":" + (s - m*60).toFixed(1).padStart(4,"0"); };
   const slots = [];
 
+  // ================= グループ（平常 / ファンファーレ） =================
+  class Cat {
+    constructor(gp){
+      this.cls = gp.cls; this.slots = [];
+      this.A = 1;                       // 連続再生の開始曲 (A〜N曲目)
+      this.N = gp.keys.length;          // 連続再生の終了曲
+      this.resumeOn = gp.resume;        // 停止位置から再開
+      this.fade = 3;                    // 再開時のフェードイン秒
+      this.plActive = false;            // 連続再生中
+      this._advancing = false;
+      this.resumeIdx = null;            // 最後に止めた曲の番号
+      const el = this.el = document.createElement("div");
+      el.className = "cat " + gp.cls;
+      el.innerHTML = `
+        <h2>${gp.title}</h2>
+        <div class="plbar">
+          <button class="btn pl"></button>
+          <label><select class="pla">${gp.keys.map((_, i) => `<option value="${i+1}">${i+1}</option>`).join("")}</select>〜<select class="pln">${gp.keys.map((_, i) => `<option value="${i+1}">${i+1}</option>`).join("")}</select>曲目</label>
+          <label><input type="checkbox" class="rs"> 停止位置から再開</label>
+          <label>再開時フェードイン <input type="number" class="fd" min="0" max="10" step="0.5"> 秒</label>
+          <span class="plmsg"></span>
+        </div>
+        <div class="list"></div>`;
+      this.$ = s => el.querySelector(s);
+      this.listEl = this.$(".list");
+      this.sel = this.$(".pln"); this.selA = this.$(".pla"); this.rs = this.$(".rs"); this.fd = this.$(".fd");
+      this.sel.value = this.N; this.selA.value = this.A; this.rs.checked = this.resumeOn; this.fd.value = this.fade;
+      this.$(".pl").onclick = () => this.plToggle();
+      this.selA.onchange = () => {
+        this.A = +this.selA.value;
+        if (this.N < this.A){ this.N = this.A; this.sel.value = this.N; }
+        this.saveSettings(); this.updatePlBtn();
+      };
+      this.sel.onchange = () => {
+        this.N = +this.sel.value;
+        if (this.A > this.N){ this.A = this.N; this.selA.value = this.A; }
+        this.saveSettings(); this.updatePlBtn();
+      };
+      this.rs.onchange = () => { this.resumeOn = this.rs.checked; this.saveSettings(); this.slots.forEach(s => s.draw()); };
+      this.fd.onchange = () => { this.fade = Math.max(0, Math.min(10, +this.fd.value || 0)); this.fd.value = this.fade; this.saveSettings(); };
+      this.updatePlBtn();
+    }
+    saveSettings(){ dbPut("cat-" + this.cls, { A: this.A, N: this.N, resumeOn: this.resumeOn, fade: this.fade }); }
+    async loadSettings(){
+      const r = await dbGet("cat-" + this.cls); if (!r) return;
+      this.N = Math.min(r.N || this.N, this.slots.length); this.A = Math.min(Math.max(1, r.A || 1), this.N);
+      this.resumeOn = !!r.resumeOn; this.fade = r.fade ?? this.fade;
+      this.sel.value = this.N; this.selA.value = this.A; this.rs.checked = this.resumeOn; this.fd.value = this.fade;
+      this.updatePlBtn(); this.slots.forEach(s => s.draw());
+    }
+    updatePlBtn(){
+      const b = this.$(".pl");
+      b.classList.toggle("on", this.plActive);
+      b.textContent = this.plActive ? "■ 連続再生を止める" : "🔁 " + this.A + "〜" + this.N + "曲目を連続再生";
+    }
+    plMsg(t){ this.$(".plmsg").textContent = t || ""; }
+    plToggle(){
+      this.plMsg("");
+      if (this.plActive){
+        const cur = this.slots.find(s => s.playing);
+        if (cur) cur.stop(); else { this.plActive = false; this.updatePlBtn(); }
+        return;
+      }
+      const pool = this.slots.slice(this.A - 1, this.N);
+      let s = null;
+      if (this.resumeOn && this.resumeIdx && this.resumeIdx >= this.A && this.resumeIdx <= this.N && this.slots[this.resumeIdx - 1].mode) s = this.slots[this.resumeIdx - 1];
+      if (!s) s = pool.find(x => x.mode);
+      if (!s) return this.plMsg(this.A + "〜" + this.N + "曲目の中に、音源が入っている枠がありません");
+      this.run(s, true);
+    }
+    run(s, useResume){
+      this._advancing = true; this.plActive = true;
+      try { s.play(useResume); } finally { this._advancing = false; }
+      this.updatePlBtn();
+    }
+    afterEnd(slot){ if (this.plActive) this.advance(slot.n); }
+    advance(fromN){
+      const A = this.A, N = this.N, count = N - A + 1;
+      const off = (fromN >= A && fromN <= N) ? fromN - A : (fromN < A ? -1 : count - 1);
+      for (let k = 1; k <= count; k++){
+        const i = A + ((((off + k) % count) + count) % count);
+        const s = this.slots[i - 1];
+        if (s && s.mode){ this.run(s, false); return; }
+      }
+      this.plActive = false; this.updatePlBtn();
+    }
+  }
+
+  // ================= 1曲ぶんの枠 =================
   class Slot {
-    constructor(cls, n, key, defaultLoop, container){
-      this.cls = cls; this.n = n; this.key = key; this.id = cls + "-" + n;
+    constructor(cat, n, key, defaultLoop, container){
+      this.cat = cat; this.cls = cat.cls; this.n = n; this.key = key; this.id = cat.cls + "-" + n;
       this.mode = null;            // "file" | "yt"
       this.buffer = null; this.peaks = null; this.name = "";
-      this.yt = null; this.ytDur = 0; this.ytId = null; this.mon = null; this.cmdAt = 0;
+      this.yt = null; this.ytDur = 0; this.ytId = null; this.mon = null; this.fadeIv = null; this.cmdAt = 0;
       this.start = 0; this.end = 0; this.loop = defaultLoop; this.volume = 0.8;
-      this.src = null; this.gain = null; this.playing = false; this.t0 = 0;
+      this.src = null; this.gain = null; this.playing = false; this.t0 = 0; this.off = 0;
+      this.curLoop = false; this.resumePos = null; this.guardUntil = 0;
       this.build();
       container.appendChild(this.el);
     }
@@ -154,12 +250,12 @@
       this.$ = s => el.querySelector(s);
       this.big = this.$(".big"); this.cv = this.$("canvas"); this.file = this.$("input[type=file]");
       this.bodyEl = this.$(".body"); this.prog = this.$(".prog i"); this.clock = this.$(".clock");
-      this.$(".setS").onclick = () => this.setHere("s");
-      this.$(".setE").onclick = () => this.setHere("e");
       this.loopEl = this.$(".loop"); this.volEl = this.$(".vol");
       this.ns = this.$(".ns"); this.ne = this.$(".ne");
       this.loopEl.checked = this.loop; this.volEl.value = this.volume;
 
+      this.$(".setS").onclick = () => this.setHere("s");
+      this.$(".setE").onclick = () => this.setHere("e");
       this.big.onclick = () => this.mode ? this.toggle() : this.openBody(true);
       this.$(".edit").onclick = () => this.openBody(this.bodyEl.hidden);
       this.$(".load").onclick = () => this.file.click();
@@ -171,11 +267,11 @@
         const box = this.$(".ytbox"); box.classList.toggle("collapsed");
         this.$(".ytshow").textContent = box.classList.contains("collapsed") ? "映像を出す" : "映像を隠す";
       };
-      this.loopEl.onchange = () => { this.loop = this.loopEl.checked; this.save(); if (this.playing) this.play(); };
+      this.loopEl.onchange = () => { this.loop = this.loopEl.checked; this.save(); if (this.playing) this.play(false); };
       this.volEl.oninput = () => {
         this.volume = +this.volEl.value;
-        if (this.gain) this.gain.gain.value = this.volume;
-        if (this.mode === "yt" && this.yt && this.yt.setVolume) this.yt.setVolume(this.volume * 100);
+        if (this.gain){ this.gain.gain.cancelScheduledValues(0); this.gain.gain.value = this.volume; }
+        if (this.mode === "yt" && this.yt && this.yt.setVolume && !this.fadeIv) this.yt.setVolume(this.volume * 100);
         this.save();
       };
       this.ns.onchange = () => this.mode && this.setTrim(+this.ns.value, this.end, true);
@@ -199,6 +295,7 @@
       this.$(".msg").textContent = t || "";
       if (t && !/…$/.test(t)) this.openBody(true);
     }
+    resumeValid(){ return this.resumePos != null && this.resumePos >= this.start && this.resumePos < this.end - 0.2; }
 
     // ----- ファイル読み込み -----
     async loadFile(f){
@@ -217,7 +314,7 @@
       const keep = data.slice(0);
       const buf = await getCtx().decodeAudioData(data);
       this.stop(); this.destroyYT();
-      this._data = keep; this.buffer = buf; this.name = name; this.mode = "file";
+      this._data = keep; this.buffer = buf; this.name = name; this.mode = "file"; this.resumePos = null;
       const ch = buf.getChannelData(0), N = 1200, step = Math.max(1, Math.floor(ch.length / N));
       this.peaks = new Float32Array(N);
       for (let i = 0; i < N; i++){ let m = 0; const a = i*step, b = Math.min(ch.length, a+step); for (let j=a;j<b;j+=Math.max(1,(step/50)|0)){ const v = Math.abs(ch[j]); if (v>m) m=v; } this.peaks[i] = m; }
@@ -229,7 +326,7 @@
 
     // ----- YouTube読み込み -----
     destroyYT(){
-      clearInterval(this.mon);
+      clearInterval(this.mon); clearInterval(this.fadeIv); this.fadeIv = null;
       if (this.yt && this.yt.destroy) { try { this.yt.destroy(); } catch(e){} }
       this.yt = null; this.ytId = null;
       this.$(".ytbox").innerHTML = "";
@@ -267,7 +364,7 @@
           : c === 2 ? "URLが正しくありません"
           : "この動画は再生できません（ライブ配信などは対象外です）");
       }
-      this.mode = "yt"; this.ytId = id; this.ytDur = dur; this._data = null;
+      this.mode = "yt"; this.ytId = id; this.ytDur = dur; this._data = null; this.resumePos = null;
       this.yt.setVolume(this.volume * 100);
       let title = ""; try { title = this.yt.getVideoData().title; } catch(e){}
       this.name = title || ("YouTube " + id);
@@ -287,7 +384,7 @@
       if (this.mode !== "yt") return;
       const recent = Date.now() - this.cmdAt < 500;
       if (s === 0 && this.playing){
-        if (this.loop){ this.yt.seekTo(this.start, true); this.yt.playVideo(); } else this.stop();
+        if (this.curLoop){ this.yt.seekTo(this.start, true); this.yt.playVideo(); } else this.finished();
       } else if (s === 2 && this.playing && !recent){
         this.stop();
       } else if (s === 1 && !this.playing){
@@ -352,7 +449,7 @@
       s = Math.min(Math.max(0, s || 0), d - minLen);
       e = Math.min(Math.max(s + minLen, e || d), d);
       this.start = s; this.end = e; this.refreshTrimUI();
-      if (commit){ this.save(); if (this.playing) this.play(); }
+      if (commit){ this.save(); if (this.playing) this.play(false); }
     }
     setHere(w){
       const p = this.pos();
@@ -370,28 +467,51 @@
     }
 
     // ----- 再生/停止 -----
-    toggle(){ this.playing ? this.stop() : this.play(); }
-    play(){
+    toggle(){ this.playing ? this.stop() : this.play(true); }
+    // useResume=true のとき、設定が有効なら停止位置から再開（フェードイン付き）
+    play(useResume = false){
       if (!this.mode) return;
       slots.forEach(s => { if (s !== this) s.stop(); });
       this.cmdAt = Date.now();
-      if (this.mode === "yt") return this.playYT();
+      const cat = this.cat;
+      const resume = useResume && cat.resumeOn && this.resumeValid();
+      const from = resume ? this.resumePos : this.start;
+      const fade = resume ? cat.fade : 0;
+      this.resumePos = null;
+      const loop = this.loop && !cat.plActive;   // 連続再生中は1曲ごとにリピートしない
+      this.curLoop = loop;
+      if (this.mode === "yt") return this.playYT(from, fade);
       const c = getCtx(); if (c.state === "suspended") c.resume();
       this.killSource();
       const src = c.createBufferSource(), g = c.createGain();
-      src.buffer = this.buffer; g.gain.value = this.volume;
+      src.buffer = this.buffer;
+      if (fade > 0){ g.gain.setValueAtTime(0, c.currentTime); g.gain.linearRampToValueAtTime(this.volume, c.currentTime + fade); }
+      else g.gain.value = this.volume;
       src.connect(g).connect(c.destination);
-      const dur = this.end - this.start;
-      if (this.loop){ src.loop = true; src.loopStart = this.start; src.loopEnd = this.end; src.start(0, this.start); }
-      else src.start(0, this.start, dur);
-      src.onended = () => { if (this.src === src){ this.src = null; this.playing = false; this.updateBtn(); this.draw(); } };
-      this.src = src; this.gain = g; this.t0 = c.currentTime; this.playing = true;
+      if (loop){ src.loop = true; src.loopStart = this.start; src.loopEnd = this.end; src.start(0, from); }
+      else src.start(0, from, Math.max(0.05, this.end - from));
+      src.onended = () => {
+        if (this.src === src){
+          this.src = null; this.playing = false; this.resumePos = null;
+          this.updateBtn(); this.draw(); this.cat.afterEnd(this);
+        }
+      };
+      this.src = src; this.gain = g; this.t0 = c.currentTime; this.off = from; this.playing = true;
       this.updateBtn(); this.tick();
     }
-    playYT(){
+    playYT(from, fade){
       const p = this.yt;
-      p.setVolume(this.volume * 100);
-      p.seekTo(this.start, true);
+      clearInterval(this.fadeIv); this.fadeIv = null;
+      if (fade > 0){
+        p.setVolume(0);
+        const t0 = Date.now();
+        this.fadeIv = setInterval(() => {
+          const r = Math.min(1, (Date.now() - t0) / (fade * 1000));
+          try { p.setVolume(this.volume * 100 * r); } catch(e){}
+          if (r >= 1){ clearInterval(this.fadeIv); this.fadeIv = null; }
+        }, 100);
+      } else p.setVolume(this.volume * 100);
+      p.seekTo(from, true);
       p.playVideo();
       this.playing = true; this.guardUntil = Date.now() + 600;
       this.updateBtn(); this.startMon(); this.tick();
@@ -403,23 +523,33 @@
         if (Date.now() < this.guardUntil) return;
         const t = this.yt.getCurrentTime();
         if (t >= this.end - 0.05){
-          if (this.loop){ this.guardUntil = Date.now() + 600; this.yt.seekTo(this.start, true); }
-          else this.stop();
+          if (this.curLoop){ this.guardUntil = Date.now() + 600; this.yt.seekTo(this.start, true); }
+          else this.finished();
         }
       }, 100);
     }
     killSource(){
       if (this.src){ const s = this.src; this.src = null; s.onended = null; try { s.stop(); } catch(e){} try { s.disconnect(); } catch(e){} }
     }
-    stop(){
+    finished(){ this.stop(true); this.cat.afterEnd(this); }   // 最後まで鳴り終わった
+    stop(natural = false){
       this.cmdAt = Date.now();
-      this.killSource();
       const was = this.playing;
+      const p = (was && !natural) ? this.pos() : null;       // 止めた位置を覚える
+      this.killSource();
       this.playing = false;
+      clearInterval(this.fadeIv); this.fadeIv = null;
       if (this.mode === "yt" && this.yt && this.yt.pauseVideo){
         clearInterval(this.mon);
-        // 再生していた枠だけ止める（未再生の枠にseekToすると勝手に再生が始まるため触らない）
+        // 再生していた枠だけ止める（未再生の枠に触ると勝手に再生が始まることがあるため）
         if (was) { try { this.yt.pauseVideo(); } catch(e){} }
+      }
+      if (natural) this.resumePos = null;
+      if (was && !natural){
+        this.resumePos = p;
+        this.cat.resumeIdx = this.n;
+        if (!this.cat._advancing) this.cat.plActive = false;   // 手で止めたら連続再生も終わり
+        this.cat.updatePlBtn();
       }
       this.updateBtn(); this.draw();
     }
@@ -435,14 +565,18 @@
       if (!this.playing) return null;
       if (this.mode === "yt") { try { return Math.min(this.end, Math.max(this.start, this.yt.getCurrentTime())); } catch(e){ return null; } }
       const el = ctx.currentTime - this.t0, dur = this.end - this.start;
-      return this.start + (this.loop ? el % dur : Math.min(el, dur));
+      if (this.curLoop) return this.start + ((this.off - this.start + el) % dur);
+      return Math.min(this.end, this.off + el);
     }
     tick(){ if (!this.playing) return; this.draw(); requestAnimationFrame(() => this.tick()); }
 
     // ----- 描画 -----
     draw(){
       const p = this.pos();
-      this.clock.textContent = (this.mode && p != null) ? "⏱ " + fmt(p) + " / " + fmt(this.duration()) : "";
+      let ct = "";
+      if (this.mode && p != null) ct = "⏱ " + fmt(p) + " / " + fmt(this.duration());
+      else if (this.mode && this.cat.resumeOn && this.resumeValid()) ct = "⏸ 停止位置 " + fmt(this.resumePos) + "（押すとここから再開）";
+      this.clock.textContent = ct;
       this.prog.style.width = (this.mode && p != null) ? Math.max(0, Math.min(100, (p - this.start)/(this.end - this.start)*100)) + "%" : "0%";
       const cv = this.cv, dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
       if (!w) return;
@@ -480,30 +614,30 @@
         if (!drag) return; const t = xToT(e);
         if (drag === "s") this.setTrim(t, this.end, false); else this.setTrim(this.start, t, false);
       };
-      this.cv.onpointerup = () => { if (drag){ drag = null; this.save(); if (this.playing) this.play(); } };
+      this.cv.onpointerup = () => { if (drag){ drag = null; this.save(); if (this.playing) this.play(false); } };
     }
   }
 
-  // ---------- 画面の組み立て（平常5 + ファンファーレ5） ----------
+  // ---------- 画面の組み立て（平常6 + ファンファーレ6） ----------
   const wrap = document.getElementById("wrap");
   const GROUPS = [
-    { cls: "normal",  title: "🎵 平常用",         loop: true,  keys: ["1","2","3","4","5","6"] },
-    { cls: "fanfare", title: "🎺 ファンファーレ用", loop: false, keys: ["Q","W","E","R","T","Y"] }
+    { cls: "normal",  title: "🎵 平常用",         loop: true,  resume: true,  keys: ["1","2","3","4","5","6"] },
+    { cls: "fanfare", title: "🎺 ファンファーレ用", loop: false, resume: false, keys: ["Q","W","E","R","T","Y"] }
   ];
-  GROUPS.forEach(gp => {
-    const cat = document.createElement("div");
-    cat.className = "cat " + gp.cls;
-    cat.innerHTML = `<h2>${gp.title}</h2>`;
-    wrap.appendChild(cat);
-    gp.keys.forEach((k, i) => slots.push(new Slot(gp.cls, i + 1, k, gp.loop, cat)));
+  const cats = GROUPS.map(gp => {
+    const cat = new Cat(gp);
+    wrap.appendChild(cat.el);
+    gp.keys.forEach((k, i) => { const s = new Slot(cat, i + 1, k, gp.loop, cat.listEl); cat.slots.push(s); slots.push(s); });
+    return cat;
   });
+  cats.forEach(c => c.loadSettings());
   slots.forEach(s => s.restore());
 
   const stopAll = () => slots.forEach(s => s.stop());
   document.getElementById("stopAll").onclick = stopAll;
   addEventListener("keydown", e => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (/INPUT|TEXTAREA/.test(e.target.tagName) && e.target.type !== "checkbox" && e.target.type !== "range") return;
+    if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) && e.target.type !== "checkbox" && e.target.type !== "range") return;
     if (e.key === "Escape") return stopAll();
     const k = e.key.toUpperCase();
     const s = slots.find(s => s.key === k);
